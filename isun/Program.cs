@@ -2,6 +2,8 @@
 using isun.Configuration;
 using isun.Http.Clients;
 using isun.Http.Handlers;
+using isun.OutputHandlers;
+using isun.Parsers;
 using isun.Repositories;
 using isun.Services;
 using Microsoft.Extensions.Configuration;
@@ -9,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Serilog;
+using Serilog.Formatting.Json;
 
 namespace isun
 {
@@ -27,10 +30,15 @@ namespace isun
                     config
                         .ReadFrom.Configuration(context.Configuration)
                         .Enrich.FromLogContext()
-                        .WriteTo.Console();
+                        .WriteTo.File(
+                            new JsonFormatter(),
+                            Directory.GetCurrentDirectory() + "/logs/logs.json",
+                            rollingInterval: RollingInterval.Hour);
                 })
                 .ConfigureServices((context, services) =>
                 {
+                    services.AddSingleton<IOutputHandler, ConsoleOutputHandler>();
+
                     services.AddSingleton<WeatherClientSettings>(options =>
                         context.Configuration
                             .GetSection(WeatherClientSettings.Section)
@@ -56,6 +64,7 @@ namespace isun
                         .AddHttpMessageHandler<LoggingHandler>()
                         .AddHttpMessageHandler<AuthenticationHandler>();
 
+                    services.AddSingleton<ICommandLineParser, CommandLineParser>();
 
                     services.AddSingleton<IWeatherClient, WeatherClient>();
                     services.AddSingleton<IWeatherRepository, WeatherRepository>();
@@ -66,7 +75,9 @@ namespace isun
                     {
                         var service = provider.GetService<IWeatherService>();
                         var logger = provider.GetService<ILogger<WeatherPollingHostedService>>();
-                        return new WeatherPollingHostedService(service, args, logger);
+                        var commandLineParser = provider.GetService<ICommandLineParser>();
+                        var outputHandler = provider.GetService<IOutputHandler>();
+                        return new WeatherPollingHostedService(service, commandLineParser, args, logger, outputHandler);
                     });
                 })
                 .Build();

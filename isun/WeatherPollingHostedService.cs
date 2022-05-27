@@ -1,5 +1,5 @@
-﻿using CommandLine;
-using isun.Configuration;
+﻿using isun.OutputHandlers;
+using isun.Parsers;
 using isun.Services;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -10,31 +10,32 @@ namespace isun;
 public class WeatherPollingHostedService : IHostedService
 {
     private readonly IWeatherService _weatherService;
+    private readonly ICommandLineParser _commandLineParser;
     private readonly string[] _citiesArgs;
     private readonly ILogger<WeatherPollingHostedService> _logger;
+    private readonly IOutputHandler _outputHandler;
     private bool _isRunning = true;
 
-    public WeatherPollingHostedService(IWeatherService weatherService, string[] citiesArgs, ILogger<WeatherPollingHostedService> logger)
+    public WeatherPollingHostedService(
+        IWeatherService weatherService,
+        ICommandLineParser commandLineParser,
+        string[] citiesArgs,
+        ILogger<WeatherPollingHostedService> logger,
+        IOutputHandler outputHandler)
     {
         _weatherService = weatherService;
+        _commandLineParser = commandLineParser;
         _citiesArgs = citiesArgs;
         _logger = logger;
+        _outputHandler = outputHandler;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        if (_citiesArgs == null)
+        if (_commandLineParser.TryParseArguments(_citiesArgs, "--cities", ",", out var cities) == false)
         {
-            _logger.LogInformation("'--cities' not provided in arguments");
-            return;
-        }
-
-        var parser = new Parser();
-        var parsedArgs = parser.ParseArguments<CommandLineOptions>(_citiesArgs);
-
-        if (parsedArgs.Value?.Cities.Any() != true)
-        {
-            _logger.LogInformation("No valid '--cities' provided");
+            _logger.LogInformation("Cities provided in incorrect format");
+            _outputHandler.WriteLine("Please provide cities in format '--cities <city1>, <city2>, <city3>, ...'");
             return;
         }
 
@@ -44,7 +45,7 @@ public class WeatherPollingHostedService : IHostedService
             {
                 try
                 {
-                    var result = await _weatherService.GetWeatherAsync(parsedArgs.Value.Cities);
+                    var result = await _weatherService.GetWeatherAsync(cities);
 
                     foreach (var weatherModel in result)
                     {
@@ -62,13 +63,15 @@ public class WeatherPollingHostedService : IHostedService
                                 $"{nameof(weatherModel.WindSpeed)}:{weatherModel.WindSpeed}, " +
                                 $"{nameof(weatherModel.Summary)}:{weatherModel.Summary}";
                         }
-                        
+
                         _logger.LogInformation(weatherMessage);
+                        _outputHandler.WriteLine(weatherMessage);
                     }
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Failed to get weather data");
+                    _outputHandler.WriteLine("Failed to get weather data");
                 }
                 finally
                 {

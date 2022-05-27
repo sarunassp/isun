@@ -1,4 +1,6 @@
 ﻿using isun.Models;
+using isun.OutputHandlers;
+using isun.Parsers;
 using isun.Services;
 using Microsoft.Extensions.Logging;
 
@@ -6,32 +8,44 @@ namespace isun.UnitTests.HostedServices;
 
 public class WeatherPollingHostedServiceTests
 {
-    [Theory]
-    [TestCaseSource(nameof(CitiesArgsCases))]
-    public async Task StartAsync_IncorrectCitiesArgsProvided_WeatherDataNotQueried(string[] citiesArgs)
+    [Test]
+    public async Task StartAsync_IncorrectCitiesArgsProvided_WeatherDataNotQueried()
     {
         // Arrange
-        var weatherServiceMock = new Mock<IWeatherService>();
+        IList<string> _;
+        var commandLineParserMock = new Mock<ICommandLineParser>();
+        commandLineParserMock
+            .Setup(parser => parser.TryParseArguments(It.IsAny<ICollection<string>>(), It.IsAny<string>(), It.IsAny<string>(), out _))
+            .Returns(false);
 
+        var weatherServiceMock = new Mock<IWeatherService>();
+    
         var sut = new WeatherPollingHostedService(
             weatherServiceMock.Object,
-            citiesArgs,
-            Mock.Of<ILogger<WeatherPollingHostedService>>());
-
+            commandLineParserMock.Object,
+            DefaultFixture.Fixture.Create<string[]>(),
+            Mock.Of<ILogger<WeatherPollingHostedService>>(),
+            Mock.Of<IOutputHandler>());
+    
         // Act
         await sut.StartAsync(CancellationToken.None);
-
+    
         // Assert
         weatherServiceMock.Verify(serv => serv.GetWeatherAsync(It.IsAny<IEnumerable<string>>()), Times.Never);
     }
 
     [Test]
-    public async Task StartAsync_GetWeatherAsyncThrows_LogsError()
+    public async Task StartAsync_GetWeatherAsyncThrows_OutputsError()
     {
         // Arrange
         var expectedException = new Exception();
+        var expectedCityList = DefaultFixture.Fixture.Create<IList<string>>();
+        var outHandlerMock = new Mock<IOutputHandler>();
 
-        var loggerMock = new Mock<ILogger<WeatherPollingHostedService>>();
+        var commandLineParserMock = new Mock<ICommandLineParser>();
+        commandLineParserMock
+            .Setup(parser => parser.TryParseArguments(It.IsAny<ICollection<string>>(), It.IsAny<string>(), It.IsAny<string>(), out expectedCityList))
+            .Returns(true);
 
         var weatherServiceMock = new Mock<IWeatherService>();
         weatherServiceMock
@@ -40,8 +54,10 @@ public class WeatherPollingHostedServiceTests
 
         var sut = new WeatherPollingHostedService(
             weatherServiceMock.Object,
-            new[] { "--cities", "Vilnius" },
-            loggerMock.Object);
+            commandLineParserMock.Object,
+            DefaultFixture.Fixture.Create<string[]>(),
+            Mock.Of<ILogger<WeatherPollingHostedService>>(),
+            outHandlerMock.Object);
 
         // Act
         sut.StartAsync(CancellationToken.None);
@@ -51,22 +67,36 @@ public class WeatherPollingHostedServiceTests
         await sut.StopAsync(CancellationToken.None);
 
         // Assert
-        loggerMock.Verify(
-            x => x.Log(
-                LogLevel.Error,
-                It.IsAny<EventId>(),
-                It.IsAny<It.IsAnyType>(),
-                It.IsAny<Exception>(),
-                It.IsAny<Func<It.IsAnyType, Exception, string>>()),
+        outHandlerMock.Verify(o =>
+            o.WriteLine("Failed to get weather data"),
             Times.Once);
     }
 
     [Test]
-    public async Task StartAsync_GetWeatherAsyncThrows_LogsWeatherData()
+    public async Task StartAsync_SuccessfullyGetWeatherData_OutputWeatherData()
     {
         // Arrange
-        var expectedWeatherData = DefaultFixture.Fixture.Create<IEnumerable<WeatherModel>>();
-        var loggerMock = new Mock<ILogger<WeatherPollingHostedService>>();
+        var weatherModel1 = new WeatherModel(
+            DefaultFixture.Fixture.Create<string>(),
+            DefaultFixture.Fixture.Create<int>(),
+            DefaultFixture.Fixture.Create<int>(),
+            DefaultFixture.Fixture.Create<int>(),
+            DefaultFixture.Fixture.Create<string>());
+        var weatherModel2 = new WeatherModel(
+            DefaultFixture.Fixture.Create<string>(),
+            DefaultFixture.Fixture.Create<int>(),
+            DefaultFixture.Fixture.Create<int>(),
+            DefaultFixture.Fixture.Create<int>(),
+            DefaultFixture.Fixture.Create<string>());
+
+        var expectedWeatherData = new List<WeatherModel> { weatherModel1, weatherModel2 };
+        IList<string> expectedCityList = expectedWeatherData.Select(data => data.City).ToList();
+        var outHandlerMock = new Mock<IOutputHandler>();
+
+        var commandLineParserMock = new Mock<ICommandLineParser>();
+        commandLineParserMock
+            .Setup(parser => parser.TryParseArguments(It.IsAny<ICollection<string>>(), It.IsAny<string>(), It.IsAny<string>(), out expectedCityList))
+            .Returns(true);
 
         var weatherServiceMock = new Mock<IWeatherService>();
         weatherServiceMock
@@ -75,8 +105,10 @@ public class WeatherPollingHostedServiceTests
 
         var sut = new WeatherPollingHostedService(
             weatherServiceMock.Object,
-            new[] { "--cities", "Vilnius" },
-            loggerMock.Object);
+            commandLineParserMock.Object,
+            DefaultFixture.Fixture.Create<string[]>(),
+            Mock.Of<ILogger<WeatherPollingHostedService>>(),
+            outHandlerMock.Object);
 
         // Act
         sut.StartAsync(CancellationToken.None);
@@ -88,26 +120,61 @@ public class WeatherPollingHostedServiceTests
         // Assert
         foreach (var weatherData in expectedWeatherData)
         {
-            loggerMock.Verify(
-                x => x.Log(
-                    LogLevel.Information,
-                    It.IsAny<EventId>(),
-                    It.Is<It.IsAnyType>((o, t) => o.ToString().Contains(weatherData.City) &&
-                                                  o.ToString().Contains(weatherData.Temperature.ToString())),
-                    It.IsAny<Exception>(),
-                    It.IsAny<Func<It.IsAnyType, Exception, string>>()),
+            outHandlerMock.Verify(o =>
+                o.WriteLine(It.Is<string>(a =>
+                    a.Contains(weatherData.City) && a.Contains(weatherData.Temperature.ToString()))
+                ),
                 Times.Once);
         }
     }
 
-    private static IEnumerable<string[]> CitiesArgsCases
+    [Test]
+    public async Task StartAsync_FailToGetWeatherDataForCities_OutputErrorMessage()
     {
-        get
+        // Arrange
+        var weatherModel1 = new WeatherModel(
+            DefaultFixture.Fixture.Create<string>(),
+            DefaultFixture.Fixture.Create<string>());
+        var weatherModel2 = new WeatherModel(
+            DefaultFixture.Fixture.Create<string>(),
+            DefaultFixture.Fixture.Create<string>());
+
+        var expectedWeatherData = new List<WeatherModel> { weatherModel1, weatherModel2 };
+        IList<string> expectedCityList = expectedWeatherData.Select(data => data.City).ToList();
+        var outHandlerMock = new Mock<IOutputHandler>();
+
+        var commandLineParserMock = new Mock<ICommandLineParser>();
+        commandLineParserMock
+            .Setup(parser => parser.TryParseArguments(It.IsAny<ICollection<string>>(), It.IsAny<string>(), It.IsAny<string>(), out expectedCityList))
+            .Returns(true);
+
+        var weatherServiceMock = new Mock<IWeatherService>();
+        weatherServiceMock
+            .Setup(serv => serv.GetWeatherAsync(It.IsAny<IEnumerable<string>>()))
+            .ReturnsAsync(expectedWeatherData);
+
+        var sut = new WeatherPollingHostedService(
+            weatherServiceMock.Object,
+            commandLineParserMock.Object,
+            DefaultFixture.Fixture.Create<string[]>(),
+            Mock.Of<ILogger<WeatherPollingHostedService>>(),
+            outHandlerMock.Object);
+
+        // Act
+        sut.StartAsync(CancellationToken.None);
+
+        // wait a bit for 1 iteration to run
+        await Task.Delay(3000);
+        await sut.StopAsync(CancellationToken.None);
+
+        // Assert
+        foreach (var weatherData in expectedWeatherData)
         {
-            yield return new string[] { "--notCities", "some", "random", "strings" };
-            yield return new string[] { "" };
-            yield return new string[] { };
-            yield return (string[])null;
+            outHandlerMock.Verify(o =>
+                o.WriteLine(It.Is<string>(a =>
+                    a.Contains(weatherData.City) && a.Contains(weatherData.Message))
+                ),
+                Times.Once);
         }
     }
 }
